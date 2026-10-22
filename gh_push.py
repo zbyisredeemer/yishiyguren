@@ -1,4 +1,4 @@
-import base64, hashlib, json, os, subprocess, sys, urllib.request, urllib.error, datetime
+import base64, hashlib, json, os, subprocess, sys, time, urllib.request, urllib.error, datetime
 
 REPO = "zbyisredeemer/yishiyguren"
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -14,19 +14,31 @@ def gh_token():
 TOKEN = gh_token()
 
 def api(method, path, data=None):
-    req = urllib.request.Request("https://api.github.com/repos/%s/%s" % (REPO, path), method=method)
-    req.add_header("Authorization", "Bearer " + TOKEN)
-    req.add_header("Accept", "application/vnd.github+json")
-    body = None
-    if data is not None:
-        body = json.dumps(data).encode()
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, body) as r:
-            return json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as e:
-        print("API ERROR", method, path, e.code, e.read()[:300])
-        raise
+    for attempt in range(5):
+        req = urllib.request.Request("https://api.github.com/repos/%s/%s" % (REPO, path), method=method)
+        req.add_header("Authorization", "Bearer " + TOKEN)
+        req.add_header("Accept", "application/vnd.github+json")
+        body = None
+        if data is not None:
+            body = json.dumps(data).encode()
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, body) as r:
+                return json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            if e.code >= 500 and attempt < 4:
+                print("  网络重试 %s %s（HTTP %s，第 %d 次）" % (method, path, e.code, attempt + 1))
+                time.sleep(3 * (2 ** attempt))
+                continue
+            print("API ERROR", method, path, e.code, e.read()[:300])
+            raise
+        except urllib.error.URLError as e:
+            if attempt < 4:
+                print("  网络重试 %s %s（%s，第 %d 次）" % (method, path, e, attempt + 1))
+                time.sleep(3 * (2 ** attempt))
+                continue
+            raise
+    sys.exit("重试多次仍失败")
 
 def blob_sha(content):
     h = hashlib.sha1()
@@ -78,6 +90,7 @@ for p in sorted(changed):
 
 entries = []
 for p, content in changed.items():
+    print("上传", p, len(content), "bytes")
     blob = api("POST", "git/blobs", {"content": base64.b64encode(content).decode(), "encoding": "base64"})
     entries.append({"path": p, "mode": "100644", "type": "blob", "sha": blob["sha"]})
 
